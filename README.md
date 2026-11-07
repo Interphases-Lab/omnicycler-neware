@@ -14,8 +14,7 @@ The OmniCycler SiLA 2 server for Neware BTS82 battery cyclers. It implements the
 ## Status
 
 - The server passes the OmniCycler conformance suite in simulation mode, as well as its own protocol-conversion, state-mapping, client, contract and typing tests.
-- **It has not been run against a real cycler yet.** neware8 itself has been tested on hardware only on our installation: a BTS82 with ten units of eight channels, rated 5 V / 10 mA, on native TCP port 8001, with a current scale of 10000. The server's defaults describe the first unit of that installation. Supervise the first real-mode runs, and read neware8's README before connecting a different model, range or firmware.
-- neware8 is required from the `main` branch of [Interphases-Lab/neware8](https://github.com/Interphases-Lab/neware8); `uv.lock` records the exact commit. Run `uv lock --upgrade-package py-neware8` to move to the latest `main`.
+- **It has not been run against a real cycler yet.** neware8 itself has been tested on hardware only on our installation: a BTS82 with ten units of eight channels, rated 5 V / 10 mA, on native TCP port 8001, with a current scale of 10000. 
 
 ## Running the server
 
@@ -25,7 +24,9 @@ uv run config create --app omnicycler.neware:create_app       # writes config.js
 uv run connector start --app omnicycler.neware:create_app --config-path config.json
 ```
 
-The server starts in **simulation mode**, with a simulated BTS82 controller (see below). For the real cycler, set `simulation_mode` to `false` in the config, or call `SimulationController.StartRealMode` at runtime. In real mode the server listens on `listen_host:listen_port`, and the controller connects to it. Configure the controller's host endpoint first, using the established site procedure. The server starts and serves even while no controller is connected: every channel then reports `unavailable`.
+The server starts in **simulation mode**, with a simulated BTS82 controller (see below). For the real cycler, set `simulation_mode` to `false` in the config, or call `SimulationController.StartRealMode` at runtime. In real mode the server listens on `listen_host:listen_port`, and the controller connects to it. Configure the controller's host endpoint first, using the established site procedure.
+
+**Channels come from the controller.** The server serves the main channels the controller advertises, with the physical ID, ratings and current scale neware8 derives from the controller's metadata (see neware8's [channel profiles](https://github.com/Interphases-Lab/neware8/blob/main/docs/api.md#channel-profiles)). It keeps them in `channels.json` in the storage directory, so later starts serve the same channels while no controller is connected; every channel then reports `unavailable`. The very first start in real mode waits up to `discovery_timeout` for the controller and fails without it. If the controller later reports other channels, the server logs a warning; restart it to serve them. In simulation mode the simulated controller has the units of the learned channels, or `simulation_units` before the real controller was seen.
 
 On Windows, run with `PYTHONUTF8=1`. Otherwise the CDK fails while logging an error to a cp1252 console and turns every defined error into an undefined one.
 
@@ -39,14 +40,16 @@ Besides the CDK's `sila_server` section (use TLS outside localhost):
 | `listen_host`, `listen_port` | `0.0.0.0`, `8001` | The address the controller connects to, as configured on the controller |
 | `controller_host` | `127.0.0.1` | The controller's IP address; other peers are refused |
 | `storage_directory` | `neware-data` | Where the server keeps runs and their history (`omnicycler-neware.sqlite`). Simulation mode uses `simulation/` inside it |
-| `channels` | unit 1, channels 1–8, physical IDs 0–7, 5 V, 0.01 A, scale 10000 | Each installed main channel: `unit`, `channel`, `physical_id` (from the installation's channel map), `voltage_rating`, `current_rating`, `current_scale`, optional `charge_range_raw` |
+| `channels` | none | Only channels whose channel map or ratings differ from what the controller advertises, for example after the map was changed in the manufacturer software. Each gives every value: `unit`, `channel`, `physical_id`, `voltage_rating` (V), `current_rating` (A), `current_scale`, optional `charge_range_raw` |
+| `discovery_timeout` | `60` | How long the first start in real mode waits for the controller to report its channels, in seconds |
 | `model` | `BTS82` | Reported as `CyclerInformationProvider.Model` |
 | `upload_interval` | `5` | The controller's current status upload interval, in seconds. neware8 judges status freshness by it, so it must match the controller |
 | `start_timeout` | `30` | How long a start waits for the controller to report the new test |
 | `status_interval` | `1` | Polling period for status subscribers and monitors |
 | `simulation_time_scale`, `simulation_status_period` | `60`, `0.5` | Speed and status cadence of the simulated controller |
+| `simulation_units` | `1` | Units of eight channels the simulated controller has before the real controller was seen |
 
-The OmniCycler channel number is `(unit - 1) * 8 + channel`. Channels and physical IDs must be unique.
+The OmniCycler channel number is `(unit - 1) * 8 + channel`. Configured channels and physical IDs must be unique.
 
 ## How the standard interface maps onto the BTS82
 
@@ -143,7 +146,7 @@ uv build
 | `tests/io/` | Protocol conversion, the state table, the run store (binding, registration, deduplication, conflicts, checkpoint, restart, gap-free indices and resumable totals), data-point conversion |
 | `tests/client/` | Every brand client method and declared error against the in-process server; `test_typing.py` is checked by ty |
 | `tests/contract/` | The brand client against the live brand feature definitions |
-| `tests/test_config.py`, `tests/test_real_mode.py` | Configuration validation; real mode starts and serves without a controller |
+| `tests/test_config.py`, `tests/test_real_mode.py` | Configuration validation; channels from the controller with overrides, remembered for starts without it, mirrored by simulation mode |
 | `tests/hardware/` | Read-only checks against a real controller; opt-in (`-m hardware`), only with approval |
 
 Native protocol framing, recipes, history decoding and the simulator are tested in neware8.
