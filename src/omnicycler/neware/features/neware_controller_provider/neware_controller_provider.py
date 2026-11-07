@@ -7,7 +7,7 @@ from ...identifiers import CATEGORY, ORIGINATOR
 from ...types import UnitInformation
 
 UnitNumber = typing.Annotated[int, sila.constraints.MinimalInclusive(1), sila.constraints.MaximalInclusive(32)]
-"""A lower unit number. Narrowed to the cycler's units at startup."""
+"""A lower unit number. Narrowed at startup to the units of the channels the controller reported."""
 
 
 class NewareControllerProvider(sila.Feature):
@@ -26,7 +26,8 @@ class NewareControllerProvider(sila.Feature):
 
     @typing.override
     async def on_before_start(self) -> None:
-        self.add_constraint(self.get_unit_information, "unit", [sila.constraints.Set(self.backend.units)])
+        if units := await self.backend.get_units():
+            self.add_constraint(self.get_unit_information, "unit", [sila.constraints.Set(units)])
 
     @sila.UnobservableProperty()
     async def get_controller_identifier(self) -> str:
@@ -41,7 +42,7 @@ class NewareControllerProvider(sila.Feature):
     @sila.UnobservableProperty()
     async def get_units(self) -> list[int]:
         """The numbers of the cycler's lower units, each holding up to eight channels."""
-        return self.backend.units
+        return await self.backend.get_units()
 
     @sila.UnobservableCommand()
     async def get_unit_information(self, unit: UnitNumber) -> UnitInformation:

@@ -33,10 +33,13 @@ def config(tmp_path: pathlib.Path) -> NewareConfig:
     )
 
 
-async def test_controller_reports_identity_and_statuses(config: NewareConfig):
+async def test_controller_reports_identity_channels_and_statuses(config: NewareConfig):
     async with NewareBackend.from_config(config) as backend:
         identity = await backend.get_identity()
         assert identity.manufacturer == "Neware"
         assert identity.serial_number
+        channels = await backend.get_channels()  # learned from the controller's metadata
+        assert channels
+        assert all(channel.maximal_voltage > 0 and channel.maximal_current > 0 for channel in channels)
         statuses = await backend.get_channel_statuses()
-        assert len(statuses) == len(config.channels)
+        assert len(statuses) == len(channels)
