@@ -1,0 +1,147 @@
+[project]
+name = "omnicycler-neware"
+version = "0.1.0"
+description = "OmniCycler SiLA 2 server for Neware BTS82 battery cyclers, built on the neware8 native driver."
+readme = "README.md"
+authors = [
+    { name = "Laswer5", email = "lukas.thoming@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "aurora-unicycler~=0.5.0",
+    "omnicycler-features[bdf] @ git+https://github.com/Interphases-Lab/omnicycler-features@a8453613fb4d05220b900fcf4e64db551bd64f9c",
+    "py-neware8",
+    "unitelabs-cdk~=0.18.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "omnicycler.neware"
+
+[tool.uv.sources]
+# py-neware8 is a local editable checkout until its omnicycler-support branch (simulator, totals in paged reads, start
+# race fix) is merged. Then pin it like omnicycler-features, as a direct reference in `dependencies`:
+# "py-neware8 @ git+https://github.com/Interphases-Lab/neware8@<sha>", and drop this source.
+omnicycler-features = { git = "https://github.com/Interphases-Lab/omnicycler-features", rev = "a8453613fb4d05220b900fcf4e64db551bd64f9c" }
+py-neware8 = { path = "../neware_prj/neware8", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+timeout = 180
+testpaths = ["tests"]
+markers = ["hardware: needs a real device; excluded by default"]
+addopts = "-m 'not hardware'"
+
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.terminal]
+error-on-warning = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812",   # conflicts with the formatter
+    "CPY001",   # no per-file copyright headers
+    "D100",     # module docstrings only where they add something
+    "D104",     # package docstrings only where they add something
+    "D105",     # magic methods are self-explanatory
+    "D107",     # __init__ is documented on the class
+    "D203",     # google convention
+    "D212",     # multi-line summaries start on the second line, as in the CDK
+    "D213",     # one-line docstrings stay on one line
+    "ASYNC109", # client timeouts are seconds forwarded to the SiLA request (best-practices client rule 11)
+    "ICN001",   # plain `import datetime`
+    "TD",       # todos are tracked in issues
+    "TID252",   # relative imports within the package, as in the UniteLabs project structure
+]
+
+[tool.ruff.lint.per-file-ignores]
+# SiLA docstrings name parameters by their PascalCase identifier, which the CDK requires and ruff cannot match.
+"src/omnicycler/neware/features/**/*.py" = ["D417"]
+"tests/**" = [
+    "D",        # test names are their documentation
+    "S101",     # asserts are the point of tests
+    "PLR2004",  # literal values in assertions are clear
+    "SLF001",   # tests may inspect private state
+    "ANN",      # fixtures and tests need no annotations beyond what helps
+    "TC",       # runtime imports in tests are fine
+    "ASYNC110", # tests poll simulated devices
+    "INP001",   # tests are not a package
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["omnicycler.neware"]
+known-third-party = ["omnicycler.features"]
+
+[tool.importlinter]
+root_packages = ["omnicycler.neware", "omnicycler.features"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "The io layer knows nothing about SiLA endpoints"
+type = "forbidden"
+source_modules = ["omnicycler.neware.io"]
+forbidden_modules = [
+    "omnicycler.neware.features",
+    "omnicycler.neware.backend",
+    "omnicycler.neware.client",
+    "omnicycler.features.server",
+    "omnicycler.features.channel_controller",
+    "omnicycler.features.cycler_information_provider",
+    "omnicycler.features.measurement_provider",
+]
+
+[[tool.importlinter.contracts]]
+name = "The client only sees the wire"
+type = "forbidden"
+source_modules = ["omnicycler.neware.client"]
+forbidden_modules = [
+    "omnicycler.neware.features",
+    "omnicycler.neware.backend",
+    "omnicycler.neware.io.controller",
+    "omnicycler.neware.io.conversion",
+    "omnicycler.neware.io.records",
+    "omnicycler.neware.io.store",
+    "omnicycler.neware.io.simulation",
+    "omnicycler.neware.io.states",
+    "neware8",
+]
+
+[[tool.importlinter.contracts]]
+name = "Wire types are a pure description of the wire"
+type = "forbidden"
+source_modules = ["omnicycler.neware.types", "omnicycler.neware.io.units", "omnicycler.neware.io.errors"]
+forbidden_modules = [
+    "omnicycler.neware.io.controller",
+    "omnicycler.neware.io.conversion",
+    "omnicycler.neware.io.records",
+    "omnicycler.neware.io.store",
+    "omnicycler.neware.io.simulation",
+    "omnicycler.neware.backend",
+    "omnicycler.neware.features",
+    "neware8",
+]
+
+[dependency-groups]
+dev = [
+    "import-linter>=2.16",
+    "omnicycler-features[testing]>=0.1.0",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1.post1",
+    "pytest-timeout>=2.4.0",
+    "ruff>=0.17.4",
+    "ty==0.0.98",
+]

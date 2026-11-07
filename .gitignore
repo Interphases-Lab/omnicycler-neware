@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.import_linter_cache/
+
+# Connector configuration, certificates, keys
+config.json
+config.yaml
+*.pem
+*.key
+*.crt
+
+# Run data recorded by neware8 and the run registry
+neware-data/
