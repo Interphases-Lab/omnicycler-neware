@@ -15,7 +15,7 @@ The OmniCycler SiLA 2 server for Neware BTS82 battery cyclers. It implements the
 
 - The server passes the OmniCycler conformance suite in simulation mode, as well as its own protocol-conversion, state-mapping, client, contract and typing tests.
 - **It has not been run against a real cycler yet.** neware8 itself has been tested on hardware only on our installation: a BTS82 with ten units of eight channels, rated 5 V / 10 mA, on native TCP port 8001, with a current scale of 10000. The server's defaults describe the first unit of that installation. Supervise the first real-mode runs, and read neware8's README before connecting a different model, range or firmware.
-- neware8 is currently a local editable dependency (`../neware_prj/neware8`, branch `omnicycler-support`) until that branch is merged. See the comment in `pyproject.toml`. That branch makes neware8 a driver that keeps no data; this server stores the history itself.
+- neware8 is pinned to commit `7f71d18` of [Interphases-Lab/neware8](https://github.com/Interphases-Lab/neware8) (the `omnicycler-support` work: a driver that keeps no data, with a simulated controller; this server stores the history itself).
 
 ## Running the server
 
