@@ -10,7 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "aurora-unicycler~=0.5.0",
     "omnicycler-features[bdf] @ git+https://github.com/Interphases-Lab/omnicycler-features@a8453613fb4d05220b900fcf4e64db551bd64f9c",
-    "py-neware8 @ git+https://github.com/Interphases-Lab/neware8@7f71d18c24ed2d400ab04994664ea5240d54bfe2",
+    "py-neware8 @ git+https://github.com/Interphases-Lab/neware8@main",
     "unitelabs-cdk~=0.18.0",
 ]
 

@@ -657,7 +657,7 @@ dev = [
 requires-dist = [
     { name = "aurora-unicycler", specifier = "~=0.5.0" },
     { name = "omnicycler-features", extras = ["bdf"], git = "https://github.com/Interphases-Lab/omnicycler-features?rev=a8453613fb4d05220b900fcf4e64db551bd64f9c" },
-    { name = "py-neware8", git = "https://github.com/Interphases-Lab/neware8?rev=7f71d18c24ed2d400ab04994664ea5240d54bfe2" },
+    { name = "py-neware8", git = "https://github.com/Interphases-Lab/neware8?rev=main" },
     { name = "unitelabs-cdk", specifier = "~=0.18.0" },
 ]
 
@@ -854,8 +854,11 @@ wheels = [
 
 [[package]]
 name = "py-neware8"
-version = "0.3.0"
-source = { git = "https://github.com/Interphases-Lab/neware8?rev=7f71d18c24ed2d400ab04994664ea5240d54bfe2#7f71d18c24ed2d400ab04994664ea5240d54bfe2" }
+version = "0.2.0"
+source = { git = "https://github.com/Interphases-Lab/neware8?rev=main#d5d2a1f339339bc88f325f8bd2374de0ee6c0e47" }
+dependencies = [
+    { name = "pyarrow" },
+]
 
 [[package]]
 name = "pyarrow"
