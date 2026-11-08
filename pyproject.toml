@@ -9,7 +9,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "aurora-unicycler~=0.5.0",
-    "omnicycler-features @ git+https://github.com/Interphases-Lab/omnicycler-features@a8453613fb4d05220b900fcf4e64db551bd64f9c",
+    "omnicycler-features @ git+https://github.com/Interphases-Lab/omnicycler-features@70cb233d3d94e83d2e2997a84c77f18100390139",
     "py-neware8 @ git+https://github.com/Interphases-Lab/neware8@main",
     "unitelabs-cdk~=0.18.0",
 ]
@@ -22,7 +22,7 @@ build-backend = "uv_build"
 module-name = "omnicycler.neware"
 
 [tool.uv.sources]
-omnicycler-features = { git = "https://github.com/Interphases-Lab/omnicycler-features", rev = "a8453613fb4d05220b900fcf4e64db551bd64f9c" }
+omnicycler-features = { git = "https://github.com/Interphases-Lab/omnicycler-features", rev = "70cb233d3d94e83d2e2997a84c77f18100390139" }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
