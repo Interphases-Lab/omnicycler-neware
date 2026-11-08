@@ -10,10 +10,11 @@ from omnicycler.neware.io.errors import NativeProtocolError
 
 PROFILE = neware8.ChannelProfile(neware8.ChannelAddress(1, 1), 0, 5.0, 0.01, 10000, -10)
 SAMPLE = Sample(name="cell", nominal_capacity=0.005)
+VOLTAGE_LIMITS = {"min_voltage_V": 2.5, "max_voltage_V": 4.3}
 
 
-def protocol(method, **extra):
-    document = {"record": {"time_s": 10}, "method": method, **extra}
+def protocol(method, *, safety=None, **extra):
+    document = {"record": {"time_s": 10}, "safety": safety or VOLTAGE_LIMITS, "method": method, **extra}
     return parse_protocol(json.dumps(document).encode(), SAMPLE).protocol
 
 
@@ -21,11 +22,11 @@ def native(converted):
     return {step.step_id: step for step in converted.compiled.steps}
 
 
-def test_unset_safety_limits_are_filled_from_the_channel_ratings():
+def test_unset_current_limits_are_filled_from_the_channel_rating():
     converted = convert_protocol(protocol([{"step": "open_circuit_voltage", "until_time_s": 60}]), PROFILE)
     step = native(converted)[1]
-    assert step.values["protect_voltage_upper"].value == 50000  # 5 V in 0.1 mV
-    assert step.values["protect_voltage_lower"].value == 0
+    assert step.values["protect_voltage_upper"].value == 43000  # the protocol's 4.3 V, in 0.1 mV
+    assert step.values["protect_voltage_lower"].value == 25000
     assert step.values["protect_current_upper"].value == 10 * 10000  # 10 mA at scale 10000
     assert step.values["protect_current_lower"].value == -10 * 10000
     assert any("filled from the channel's ratings" in warning for warning in converted.warnings)

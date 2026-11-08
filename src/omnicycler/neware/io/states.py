@@ -12,14 +12,17 @@ remembers in its run store that a client stopped the run. The mapping:
 | running, wait start, wait timeout, synchronous control | `RUNNING` | `UNAVAILABLE` |
 | stop, pause, offline pause, beep, reserved pause | `PAUSED` | `UNAVAILABLE` |
 | protect, finish protect, fixture states, unknown | `FAULTED` | `UNAVAILABLE` |
-| not reported, stale or disconnected | `UNAVAILABLE` | `UNAVAILABLE` |
+| not reported, stale or disconnected | `UNAVAILABLE`, still naming the run | `UNAVAILABLE` |
 
-A run that a client cleared is deleted from the store, so its channel reports
-`IDLE`. Tests started outside this server, for example in the BTS software, are
-`UNAVAILABLE`: their history is not kept, so this server cannot describe them as
-runs.
+A channel names its run in `RunId` whenever this server started the test the
+controller last reported on it; while the controller is disconnected, that run
+stays readable. A run that a client cleared is deleted from the store, so its
+channel reports `IDLE` without a run. Tests started outside this server, for
+example in the BTS software, are `UNAVAILABLE`: their history is not kept, so
+this server cannot describe them as runs.
 """
 
+import dataclasses
 import math
 
 import neware8
@@ -44,11 +47,11 @@ def channel_status(
     Args:
       number: The OmniCycler channel number.
       status: The channel's latest fresh status, or `None`.
-      run: This server's run of the test the status reports, if this server started it.
+      run: This server's run of the test the controller last reported, if this server started it.
       record_count: The number of stored records of that run.
     """
     if status is None:
-        return _without_run(number, ChannelState.UNAVAILABLE, math.nan, math.nan)
+        return _unreported(number, run, record_count)
     current = math.nan if status.current_a is None else status.current_a
     if run is None:
         state = ChannelState.IDLE if status.state is Native.FINISHED else ChannelState.UNAVAILABLE
@@ -58,6 +61,7 @@ def channel_status(
     return ChannelStatus(
         channel=number,
         state=state,
+        run_id=run.run_id,
         voltage=status.voltage_v,
         current=current,
         test_time=status.elapsed_s,
@@ -90,10 +94,19 @@ def fault_reason(status: neware8.ChannelStatus) -> str:
     return f"The cycler reports the channel state {status.state.value!r}."
 
 
+def _unreported(number: int, run: RunEntry | None, record_count: int) -> ChannelStatus:
+    if run is None:
+        return _without_run(number, ChannelState.UNAVAILABLE, math.nan, math.nan)
+    return dataclasses.replace(
+        _without_run(number, ChannelState.UNAVAILABLE, math.nan, math.nan), run_id=run.run_id, record_count=record_count
+    )
+
+
 def _without_run(number: int, state: ChannelState, voltage: float, current: float) -> ChannelStatus:
     return ChannelStatus(
         channel=number,
         state=state,
+        run_id="",
         voltage=voltage,
         current=current,
         test_time=0.0,
