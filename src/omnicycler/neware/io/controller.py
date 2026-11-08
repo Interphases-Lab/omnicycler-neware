@@ -4,7 +4,8 @@ The Neware controller, in neware8's vocabulary.
 `NewareController` owns one neware8 `Client` (the TCP listener the BTS82
 controller connects to) and the run store that client delivers history to. In
 simulation mode it also runs neware8's simulated controller against its own
-listener. Opening it only listens: it never starts, stops or changes a
+listener; like the real one, it keeps its tests while the server is closed
+(see `simulation`). Opening it only listens: it never starts, stops or changes a
 test, because the controller may reconnect at any time.
 
 Every channel operation is addressed by `ChannelAddress` and checked against the
@@ -29,7 +30,7 @@ import typing
 import neware8
 
 from .errors import ChannelsNotIdleError, SettingRejectedError
-from .simulation import create_simulator
+from .simulation import create_simulator, park_simulator, take_simulator
 from .store import NewareStore, RunEntry
 
 if typing.TYPE_CHECKING:
@@ -102,6 +103,7 @@ class NewareController:
         self._client: neware8.Client | None = None
         self._simulator: SimulatedController | None = None
         self._store: NewareStore | None = None
+        self._directory: pathlib.Path | None = None
         self._layout_path = settings.storage_directory / LAYOUT_FILENAME
         self._layout = _read_layout(self._layout_path)
 
@@ -187,27 +189,33 @@ class NewareController:
             await client.close()
             await store.close()
             raise
-        self._client, self._store = client, store
+        self._client, self._store, self._directory = client, store, directory
         self.simulation = simulation
         if simulation:
-            units = max((address.unit for address in self._layout), default=settings.simulation_units)
-            self._simulator = create_simulator(
-                client.listening_port,
-                units=units,
-                time_scale=settings.simulation_time_scale,
-                status_period=settings.simulation_status_period,
-            )
-            await self._simulator.start()
+            simulator = take_simulator(directory)
+            if simulator is None:
+                units = max((address.unit for address in self._layout), default=settings.simulation_units)
+                simulator = create_simulator(
+                    client.listening_port,
+                    units=units,
+                    time_scale=settings.simulation_time_scale,
+                    status_period=settings.simulation_status_period,
+                )
+            simulator.port = client.listening_port
+            self._simulator = simulator
+            await simulator.start()
             await client.wait_ready(READY_TIMEOUT)
             await self._await_statuses(READY_TIMEOUT)
         logger.info("Listening for the %s controller", "simulated" if simulation else "Neware")
 
     async def close(self) -> None:
-        """Stop listening. Tests on the controller keep running."""
-        simulator, client, store = self._simulator, self._client, self._store
-        self._simulator = self._client = self._store = None
+        """Stop listening. Tests on the controller keep running, also on the simulated one."""
+        simulator, client, store, directory = self._simulator, self._client, self._store, self._directory
+        self._simulator = self._client = self._store = self._directory = None
         if simulator is not None:
-            await simulator.close()
+            await simulator.close()  # disconnects and pauses it; its channels and tests stay as they are
+            if directory is not None:
+                park_simulator(directory, simulator)
         if client is not None:
             await client.close()
         if store is not None:
