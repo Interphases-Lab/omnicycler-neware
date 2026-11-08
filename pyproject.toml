@@ -9,7 +9,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "aurora-unicycler~=0.5.0",
-    "omnicycler-features[bdf] @ git+https://github.com/Interphases-Lab/omnicycler-features@a8453613fb4d05220b900fcf4e64db551bd64f9c",
+    "omnicycler-features @ git+https://github.com/Interphases-Lab/omnicycler-features@a8453613fb4d05220b900fcf4e64db551bd64f9c",
     "py-neware8 @ git+https://github.com/Interphases-Lab/neware8@main",
     "unitelabs-cdk~=0.18.0",
 ]
@@ -134,7 +134,6 @@ forbidden_modules = [
 [dependency-groups]
 dev = [
     "import-linter>=2.16",
-    "omnicycler-features[testing]>=0.1.0",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1.post1",
     "pytest-timeout>=2.4.0",
