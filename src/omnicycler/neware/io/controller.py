@@ -84,8 +84,8 @@ class ChannelView:
 
     Attributes:
       status: The latest fresh status, or `None` if none is available.
-      run: This server's run of the test the status reports, if this server started it.
-      record_count: The number of stored records of that run.
+      run: This server's run of the test the latest status reported, fresh or not, if this server started it.
+      record_count: The number of numbered records of that run.
     """
 
     status: neware8.ChannelStatus | None
@@ -243,23 +243,24 @@ class NewareController:
     async def views(
         self, addresses: typing.Iterable[neware8.ChannelAddress]
     ) -> dict[neware8.ChannelAddress, ChannelView]:
-        """Return what is known about each of the channels."""
+        """
+        Return what is known about each of the channels.
+
+        The run comes from the latest status the controller sent, even a stale
+        one, so a run stays known (and its data readable) while the controller
+        is disconnected; only a fresh status gives the channel's state.
+        """
         client, store = self._client, self._store
-        if client is None or store is None or not client.connected:
+        if client is None or store is None:
             return {address: ChannelView(None, None) for address in addresses}
         snapshot = client.snapshot
-        found: dict[neware8.ChannelAddress, tuple[neware8.ChannelStatus | None, RunEntry | None]] = {}
+        views: dict[neware8.ChannelAddress, ChannelView] = {}
         for address in addresses:
-            status = snapshot.get(address)
-            if status is not None and status.age_s > client.maximum_status_age:
-                status = None
-            run = store.run_on(address, status.test_id) if status is not None else None
-            found[address] = (status, run)
-        counts = await store.record_counts([run for _, run in found.values() if run is not None])
-        return {
-            address: ChannelView(status, run, counts[run.run_id] if run is not None else 0)
-            for address, (status, run) in found.items()
-        }
+            latest = snapshot.get(address)
+            run = store.run_on(address, latest.test_id) if latest is not None else None
+            fresh = latest is not None and client.connected and latest.age_s <= client.maximum_status_age
+            views[address] = ChannelView(latest if fresh else None, run, store.record_count(run) if run else 0)
+        return views
 
     async def view(self, address: neware8.ChannelAddress) -> ChannelView:
         """Return what is known about one channel."""

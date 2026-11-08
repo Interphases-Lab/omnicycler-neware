@@ -31,15 +31,19 @@ async def test_validate_native_protocol_summarizes_the_program(neware):
 async def test_native_run_appears_in_the_standard_features(neware):
     client = neware.client
     step_file = discharge_cycles()
-    await client.protocols.start_native_protocol(1, step_file, SAMPLE)
+    run_id = await client.protocols.start_native_protocol(1, step_file, SAMPLE, run_id="native-run")
+    assert run_id == "native-run"
+    assert await client.protocols.start_native_protocol(1, step_file, SAMPLE, run_id=run_id) == run_id  # idempotent
 
     status = await client.channels.wait_for_state(1, ENDED_STATES, timeout=30)
     assert status.state is ChannelState.FINISHED
+    assert status.run_id == run_id
     run = await client.channels.get_run_information(1)
+    assert run.run_id == run_id
     assert run.protocol_format is ProtocolFormat.NATIVE
     assert run.protocol == step_file
     assert run.sample == SAMPLE
-    points = await client.measurements.get_all_data(1)
+    points = await client.measurements.get_all_data(1, run_id)
     assert [point.record_index for point in points] == list(range(len(points)))
     assert {point.protocol_step for point in points} == {1}
     assert points[-1].cycle_count == 3
@@ -68,12 +72,31 @@ async def test_native_start_on_a_busy_channel_is_rejected(neware):
 
 async def test_native_start_on_an_ended_run_is_rejected_until_cleared(neware):
     client = neware.client
-    await client.protocols.start_native_protocol(1, discharge_cycles(), SAMPLE)
+    run_id = await client.protocols.start_native_protocol(1, discharge_cycles(), SAMPLE)
     await client.channels.wait_for_state(1, ENDED_STATES, timeout=30)
     with pytest.raises(ChannelNotClearedError):
         await client.protocols.start_native_protocol(1, discharge_cycles(), SAMPLE)
-    await client.channels.clear_channel(1)
+    await client.channels.clear_channel(1, run_id)
     await client.protocols.start_native_protocol(1, discharge_cycles(), SAMPLE)
+
+
+async def test_run_stays_readable_while_the_controller_is_offline(neware):
+    client = neware.client
+    run_id = await client.protocols.start_native_protocol(1, discharge_cycles(), SAMPLE)
+    await client.channels.wait_for_state(1, ENDED_STATES, timeout=30)
+    count = await client.measurements.get_record_count(1, run_id)
+
+    await neware.backend.controller._simulator.close()  # the controller goes offline
+    async with asyncio.timeout(10):
+        while neware.backend.controller.connected:
+            await asyncio.sleep(0.05)
+
+    status = await client.channels.get_channel_status(1)
+    assert status.state is ChannelState.UNAVAILABLE
+    assert status.run_id == run_id
+    assert len(await client.measurements.get_all_data(1, run_id)) == count
+    with pytest.raises(ChannelUnavailableError):
+        await client.channels.clear_channel(1, run_id)
 
 
 async def test_native_start_without_a_controller_is_rejected(neware):
@@ -87,12 +110,12 @@ async def test_native_start_without_a_controller_is_rejected(neware):
 
 async def test_native_run_pauses_resumes_and_stops(neware):
     channels = neware.client.channels
-    await neware.client.protocols.start_native_protocol(1, long_rest(), SAMPLE)
-    await channels.pause_protocol(1)
+    run_id = await neware.client.protocols.start_native_protocol(1, long_rest(), SAMPLE)
+    await channels.pause_protocol(1, run_id)
     await channels.wait_for_state(1, {ChannelState.PAUSED}, timeout=10)
-    await channels.resume_protocol(1)
+    await channels.resume_protocol(1, run_id)
     await channels.wait_for_state(1, {ChannelState.RUNNING}, timeout=10)
-    await channels.stop_protocol(1)
+    await channels.stop_protocol(1, run_id)
     status = await channels.wait_for_state(1, ENDED_STATES, timeout=10)
     assert status.state is ChannelState.STOPPED
 

@@ -18,22 +18,20 @@ current charging, Ah, Wh and s.
 
 import pathlib
 import typing
-import uuid
 
 import neware8
 from aurora_unicycler import CyclingProtocol
-from omnicycler.features.backend import ACTIVE_STATES, ENDED_STATES, CyclerBackend, CyclerIdentity
+from omnicycler.features.backend import CyclerBackend, CyclerIdentity
 from omnicycler.features.errors import (
-    ChannelBusyError,
-    ChannelNotClearedError,
     ChannelUnavailableError,
     InvalidSampleError,
+    NoRunError,
+    RunIdInUseError,
     UnsupportedProtocolError,
 )
 from omnicycler.features.protocol import PLACEHOLDER_SAMPLE_NAME, encode_protocol
 from omnicycler.features.types import (
     ChannelInformation,
-    ChannelState,
     ChannelStatus,
     DataPoint,
     ProtocolFormat,
@@ -128,7 +126,6 @@ class NewareBackend(CyclerBackend):
             await self.controller.open(simulation=not simulation)
             raise
         self._identity = None  # the other controller has another identity
-        self._cleared.clear()  # runs of the other mode are in its own store
 
     @staticmethod
     def profile_of(channel: NewareChannelConfig) -> neware8.ChannelProfile:
@@ -204,11 +201,19 @@ class NewareBackend(CyclerBackend):
         ]
 
     @typing.override
+    async def read_status(self, channel: int) -> ChannelStatus:
+        address = self.address(channel)
+        view = await self.controller.view(address)
+        return channel_status(channel_number(address), view.status, view.run, view.record_count)
+
+    @typing.override
     async def read_run_information(self, channel: int) -> RunInformation:
         run = await self._run(channel)
         return RunInformation(
             run_id=run.run_id,
-            sample=Sample(name=run.sample_name, nominal_capacity=run.nominal_capacity),
+            sample=Sample(
+                name=run.sample_name, nominal_capacity=run.nominal_capacity, identifier=run.sample_identifier
+            ),
             protocol_format=ProtocolFormat.AURORA_UNICYCLER
             if run.kind is ProtocolKind.UNICYCLER
             else ProtocolFormat.NATIVE,
@@ -217,8 +222,10 @@ class NewareBackend(CyclerBackend):
         )
 
     @typing.override
-    async def read_data(self, channel: int, from_index: int, count: int) -> list[DataPoint]:
-        run = await self._run(channel)
+    async def read_data(self, channel: int, run_id: str, from_index: int, count: int) -> list[DataPoint]:
+        run = (await self.controller.view(self.address(channel))).run
+        if run is None or run.run_id != run_id:
+            return []
         return await self.controller.store.read(run, from_index, count)
 
     @typing.override
@@ -229,20 +236,21 @@ class NewareBackend(CyclerBackend):
             raise UnsupportedProtocolError(str(error)) from None
 
     @typing.override
-    async def start(self, channel: int, protocol: CyclingProtocol, run_id: str) -> None:
+    async def start(self, channel: int, protocol: CyclingProtocol, sample: Sample, run_id: str) -> None:
         profile = self.profile(channel)
         converted = convert_protocol(protocol, profile)
         entry = RunEntry(
             run_id=run_id,
             unit=profile.address.unit,
             channel=profile.address.channel,
-            sample_name=protocol.sample.name,
-            nominal_capacity=(protocol.sample.capacity_mAh or 0.0) / 1000,
+            sample_name=sample.name,
+            nominal_capacity=sample.nominal_capacity,
+            sample_identifier=sample.identifier,
             kind=ProtocolKind.UNICYCLER,
             protocol=encode_protocol(protocol),
             step_positions=converted.step_positions,
         )
-        await self.controller.start(profile.address, converted.recipe, entry)
+        await self._start_entry(profile.address, converted.recipe, entry)
 
     @typing.override
     async def pause(self, channel: int) -> None:
@@ -294,32 +302,31 @@ class NewareBackend(CyclerBackend):
             msg = f"Sample name {sample.name!r} is a placeholder; give the cell a real name."
             raise InvalidSampleError(msg)
 
-    async def start_native_protocol(self, channel: int, protocol: bytes, sample: Sample) -> None:
+    async def start_native_protocol(self, channel: int, run_id: str, protocol: bytes, sample: Sample) -> None:
         """
-        Start a BTS Step File on an idle channel, with the same checks as `start_protocol`.
+        Start a BTS Step File on an idle channel as the run `run_id`, with the same checks as `start_protocol`.
 
         Raises:
-          ChannelBusyError: If the channel is running or paused a protocol.
-          ChannelNotClearedError: If the channel holds an ended run.
+          NativeProtocolError: If the step file cannot run on the channel.
+          ChannelBusyError: If the channel is running or paused another run.
+          ChannelNotClearedError: If the channel holds another, ended run.
           ChannelUnavailableError: If the channel is unavailable.
+          RunIdInUseError: If another channel holds a run with this identifier.
         """
         profile = self.profile(channel)
         recipe, compiled = compile_step_file(protocol, profile)
-        async with self._locks[channel]:
-            state = (await self.get_channel_status(channel)).state
-            _require_idle(channel, state)
-            entry = RunEntry(
-                run_id=str(uuid.uuid4()),
-                unit=profile.address.unit,
-                channel=profile.address.channel,
-                sample_name=sample.name,
-                nominal_capacity=sample.nominal_capacity,
-                kind=ProtocolKind.NATIVE,
-                protocol=protocol,
-                step_positions={step.step_id: step.index for step in compiled.steps},
-            )
-            await self.controller.start(profile.address, recipe, entry)
-            self._cleared.discard(channel)
+        entry = RunEntry(
+            run_id=run_id,
+            unit=profile.address.unit,
+            channel=profile.address.channel,
+            sample_name=sample.name,
+            nominal_capacity=sample.nominal_capacity,
+            sample_identifier=sample.identifier,
+            kind=ProtocolKind.NATIVE,
+            protocol=protocol,
+            step_positions={step.step_id: step.index for step in compiled.steps},
+        )
+        await self.start_run(channel, run_id, lambda: self._start_entry(profile.address, recipe, entry))
 
     async def get_units(self) -> list[int]:
         """The lower units of the served channels."""
@@ -377,11 +384,17 @@ class NewareBackend(CyclerBackend):
         """
         await self.controller.synchronize_clock()
 
+    async def _start_entry(self, address: neware8.ChannelAddress, recipe: neware8.Recipe, entry: RunEntry) -> None:
+        if self.controller.store.holds(entry.run_id):  # a run whose channel another test took over
+            msg = f"This server still holds run {entry.run_id!r}; give each run its own ID."
+            raise RunIdInUseError(msg)
+        await self.controller.start(address, recipe, entry)
+
     async def _run(self, channel: int) -> RunEntry:
         view = await self.controller.view(self.address(channel))
         if view.run is None:
-            msg = f"Channel {channel} holds no run of this server."
-            raise neware8.StateError(msg)
+            msg = f"Channel {channel} holds no run."
+            raise NoRunError(msg)
         return view.run
 
 
@@ -405,19 +418,6 @@ def _profile_of(channel: NewareChannelConfig) -> neware8.ChannelProfile:
         current_scale=channel.current_scale,
         charge_range_raw=channel.charge_range_raw,
     )
-
-
-def _require_idle(channel: int, state: ChannelState) -> None:
-    name = state.name.lower()
-    if state in ACTIVE_STATES:
-        msg = f"Channel {channel} is {name}; stop its protocol first."
-        raise ChannelBusyError(msg)
-    if state in ENDED_STATES:
-        msg = f"Channel {channel} holds a {name} run; clear the channel first."
-        raise ChannelNotClearedError(msg)
-    if state is ChannelState.UNAVAILABLE:
-        msg = f"Channel {channel} is unavailable."
-        raise ChannelUnavailableError(msg)
 
 
 __all__ = ["MANUFACTURER", "SUPPORTED_STEP_TYPES", "NewareBackend"]

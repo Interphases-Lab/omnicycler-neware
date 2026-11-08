@@ -13,10 +13,13 @@ main-channel records of registered tests are kept, keyed by sequence. A resent
 record with identical bytes is accepted again; the same sequence with other
 bytes is a conflict that refuses the whole batch, so it is not acknowledged.
 
-Records are numbered from zero without gaps by their order of sequence. If late
-history fills an earlier gap, the indices after it shift and the cached totals
-of the run are dropped. Clearing a run deletes it with its records; the
-controller's own history is untouched.
+Records get their record index once, when they arrive, counting from zero
+without gaps in the order of their sequence, and keep it for as long as the run
+exists. A late record, whose sequence lies before an already numbered one (the
+controller resent older history), is kept but never numbered or served: giving
+it an index would shift every record after it. A gap it leaves makes the totals
+after it NaN, as any history gap does. Clearing a run deletes it with its
+records; the controller's own history is untouched.
 """
 
 import asyncio
@@ -26,6 +29,7 @@ import dataclasses
 import enum
 import itertools
 import json
+import logging
 import pathlib
 import sqlite3
 import threading
@@ -37,8 +41,10 @@ from omnicycler.features.types import DataPoint
 
 from .records import to_data_point
 
+logger = logging.getLogger(__name__)
+
 FILENAME = "omnicycler-neware.sqlite"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAXIMAL_CURSORS = 64
 """Resumable totals positions kept in memory, so paged reads need not start from the first record."""
 
@@ -56,7 +62,7 @@ class RunEntry:
     A run started by this server.
 
     Attributes:
-      run_id: The OmniCycler run ID.
+      run_id: The OmniCycler run ID, chosen by the client that started the run.
       unit: The channel's lower unit.
       channel: The channel within the unit.
       sample_name: The name of the cell under test.
@@ -64,6 +70,7 @@ class RunEntry:
       kind: How the protocol was given.
       protocol: The protocol as given, with the sample merged in for unicycler protocols.
       step_positions: The protocol position of each native step ID.
+      sample_identifier: The cell's identifier outside OmniCycler, or empty.
       stopped: Whether a client stopped the run.
       test_id: The TestID the controller assigned, once the start was acknowledged.
       started_ns: The host time of the controller's start acknowledgement.
@@ -78,6 +85,7 @@ class RunEntry:
     kind: ProtocolKind
     protocol: bytes
     step_positions: dict[int, int]
+    sample_identifier: str = ""
     stopped: bool = False
     test_id: int | None = None
     started_ns: int | None = None
@@ -89,6 +97,14 @@ class RunEntry:
         return neware8.ChannelAddress(self.unit, self.channel)
 
 
+@dataclasses.dataclass
+class _Numbering:
+    """Where a run's numbering stands: the next record index, and the highest sequence numbered."""
+
+    next_index: int
+    highest_sequence: int
+
+
 class NewareStore:
     """Runs and their history records; neware8's `HistorySink`. Use from one event loop."""
 
@@ -97,6 +113,7 @@ class NewareStore:
         self._db: sqlite3.Connection | None = None
         self._lock = threading.Lock()
         self._runs: dict[str, RunEntry] = {}
+        self._numbering: dict[str, _Numbering] = {}
         self._cursors: collections.OrderedDict[tuple[str, int], RunningTotals] = collections.OrderedDict()
 
     async def open(self) -> None:
@@ -118,6 +135,10 @@ class NewareStore:
             None,
         )
 
+    def holds(self, run_id: str) -> bool:
+        """Whether the store holds a started run with this ID."""
+        return run_id in self._runs
+
     async def attempt(self, run: RunEntry) -> None:
         """Store a run about to be started; replaces an earlier attempt on the channel that got no TestID."""
         await asyncio.to_thread(self._attempt, run)
@@ -133,11 +154,12 @@ class NewareStore:
         """Delete a run and its records."""
         await asyncio.to_thread(self._execute, "DELETE FROM runs WHERE run_id=?", (run.run_id,))
         self._runs.pop(run.run_id, None)
-        await asyncio.to_thread(self._forget_cursors, run.run_id)
+        await asyncio.to_thread(self._forget, run.run_id)
 
-    async def record_counts(self, runs: list[RunEntry]) -> dict[str, int]:
-        """Return the number of stored records of each run."""
-        return await asyncio.to_thread(self._record_counts, [run.run_id for run in runs])
+    def record_count(self, run: RunEntry) -> int:
+        """Return the number of numbered records of a run, without reading the database."""
+        numbering = self._numbering.get(run.run_id)
+        return 0 if numbering is None else numbering.next_index
 
     async def read(self, run: RunEntry, from_index: int, count: int) -> list[DataPoint]:
         """
@@ -158,6 +180,7 @@ class NewareStore:
         """Give the attempted runs on these channels their TestIDs."""
         for run in await asyncio.to_thread(self._register, tests):
             self._runs[run.run_id] = run
+            self._numbering.setdefault(run.run_id, _Numbering(0, 0))
 
     async def commit(self, batch: HistoryBatch) -> None:
         """Store the batch's records of registered tests and its token, durably, in one transaction."""
@@ -186,10 +209,12 @@ class NewareStore:
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=FULL")
         version = db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in {0, SCHEMA_VERSION}:
+        if version not in {0, 1, SCHEMA_VERSION}:
             db.close()
             msg = f"Unsupported run store schema {version} in {self._path}; expected {SCHEMA_VERSION}."
             raise neware8.StorageError(msg)
+        if version == 1:
+            _migrate_from_1(db)
         db.executescript(
             f"""
             CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -198,13 +223,15 @@ class NewareStore:
                 sample_name TEXT NOT NULL, nominal_capacity REAL NOT NULL, kind TEXT NOT NULL,
                 protocol BLOB NOT NULL, step_positions TEXT NOT NULL, stopped INTEGER NOT NULL,
                 test_id INTEGER, started_ns INTEGER, charge_range INTEGER,
+                sample_identifier TEXT NOT NULL DEFAULT '',
                 UNIQUE (unit, channel, test_id)
             );
             CREATE TABLE IF NOT EXISTS records (
                 run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
-                sequence INTEGER NOT NULL, raw BLOB NOT NULL,
+                sequence INTEGER NOT NULL, raw BLOB NOT NULL, record_index INTEGER,
                 PRIMARY KEY (run_id, sequence)
             ) WITHOUT ROWID;
+            CREATE UNIQUE INDEX IF NOT EXISTS records_by_index ON records (run_id, record_index);
             PRAGMA user_version={SCHEMA_VERSION};
             """
         )
@@ -212,6 +239,13 @@ class NewareStore:
         self._runs = {
             run.run_id: run for run in map(_run_from_row, db.execute("SELECT * FROM runs WHERE test_id IS NOT NULL"))
         }
+        self._numbering = {run_id: _Numbering(0, 0) for run_id in self._runs}
+        for run_id, highest_index, highest_sequence in db.execute(
+            "SELECT run_id, max(record_index), max(sequence) FROM records "
+            "WHERE record_index IS NOT NULL GROUP BY run_id"
+        ):
+            if run_id in self._numbering:
+                self._numbering[run_id] = _Numbering(highest_index + 1, highest_sequence)
 
     def _execute(self, sql: str, parameters: tuple[object, ...]) -> None:
         with self._lock, self._connection() as db:
@@ -234,7 +268,8 @@ class NewareStore:
         with self._lock, self._connection() as db:
             db.execute("DELETE FROM runs WHERE unit=? AND channel=? AND test_id IS NULL", (run.unit, run.channel))
             db.execute(
-                "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)",
+                "INSERT INTO runs (run_id, unit, channel, sample_name, nominal_capacity, kind, protocol, "
+                "step_positions, stopped, sample_identifier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     run.run_id,
                     run.unit,
@@ -245,6 +280,7 @@ class NewareStore:
                     run.protocol,
                     json.dumps(run.step_positions),
                     int(run.stopped),
+                    run.sample_identifier,
                 ),
             )
 
@@ -267,9 +303,9 @@ class NewareStore:
         return [_run_from_row(row) for row in registered if row is not None]
 
     def _commit(self, batch: HistoryBatch, owners: dict[tuple[int, int, int], str]) -> None:
-        backfilled: set[str] = set()
+        late: collections.Counter[str] = collections.Counter()
+        numbering: dict[str, _Numbering] = {}  # of the runs this batch numbers records of
         with self._lock, self._connection() as db:
-            highest: dict[str, int] = {}
             for record in batch.records:
                 run_id = owners.get((record.unit, record.channel, record.test_id))
                 if run_id is None or not is_main(record):
@@ -282,24 +318,26 @@ class NewareStore:
                         msg = f"Conflicting history for run {run_id} at sequence {record.sequence}."
                         raise neware8.StorageError(msg)
                     continue
-                if run_id not in highest:
-                    row = db.execute("SELECT max(sequence) FROM records WHERE run_id=?", (run_id,)).fetchone()
-                    highest[run_id] = row[0] or 0
-                if record.sequence < highest[run_id]:
-                    backfilled.add(run_id)
-                highest[run_id] = max(highest[run_id], record.sequence)
-                db.execute("INSERT INTO records VALUES (?, ?, ?)", (run_id, record.sequence, record.raw))
+                if run_id not in numbering:
+                    numbering[run_id] = dataclasses.replace(self._numbering.get(run_id) or _Numbering(0, 0))
+                state = numbering[run_id]
+                index = None
+                if record.sequence > state.highest_sequence:
+                    index = state.next_index
+                    state.next_index += 1
+                    state.highest_sequence = record.sequence
+                else:
+                    late[run_id] += 1
+                db.execute("INSERT INTO records VALUES (?, ?, ?, ?)", (run_id, record.sequence, record.raw, index))
             db.execute("INSERT OR REPLACE INTO metadata VALUES ('checkpoint', ?)", (str(batch.token),))
-        for run_id in backfilled:
-            self._forget_cursors(run_id)  # late history shifted the indices after it
-
-    def _record_counts(self, run_ids: list[str]) -> dict[str, int]:
-        with self._lock:
-            db = self._connection()
-            return {
-                run_id: db.execute("SELECT count(*) FROM records WHERE run_id=?", (run_id,)).fetchone()[0]
-                for run_id in run_ids
-            }
+        # Only once the transaction committed, and only for runs that still exist.
+        self._numbering.update({run_id: state for run_id, state in numbering.items() if run_id in self._runs})
+        for run_id, count in late.items():
+            logger.warning(
+                "Run %s received %d late records, before records already numbered; they are kept but not served.",
+                run_id,
+                count,
+            )
 
     def _read(self, run: RunEntry, from_index: int, count: int) -> list[DataPoint]:
         with self._lock:
@@ -308,15 +346,14 @@ class NewareStore:
             previous = None
             if from_index:
                 row = db.execute(
-                    "SELECT raw FROM records WHERE run_id=? ORDER BY sequence LIMIT 1 OFFSET ?",
-                    (run.run_id, from_index - 1),
+                    "SELECT raw FROM records WHERE run_id=? AND record_index=?", (run.run_id, from_index - 1)
                 ).fetchone()
                 if row is None:
                     return []
                 previous = HistoryRecord.from_bytes(bytes(row[0]))
             rows = db.execute(
-                "SELECT raw FROM records WHERE run_id=? ORDER BY sequence LIMIT ? OFFSET ?",
-                (run.run_id, count + 1, from_index),  # one more, to resolve a boundary at the end
+                "SELECT raw FROM records WHERE run_id=? AND record_index>=? AND record_index<? ORDER BY record_index",
+                (run.run_id, from_index, from_index + count + 1),  # one more, to resolve a boundary at the end
             ).fetchall()
             records = (HistoryRecord.from_bytes(bytes(raw)) for (raw,) in rows)
             points = list(
@@ -339,7 +376,9 @@ class NewareStore:
             return copy.deepcopy(cached)
         totals = RunningTotals(run.charge_range_raw)
         if index:
-            cursor = db.execute("SELECT raw FROM records WHERE run_id=? ORDER BY sequence LIMIT ?", (run.run_id, index))
+            cursor = db.execute(
+                "SELECT raw FROM records WHERE run_id=? AND record_index<? ORDER BY record_index", (run.run_id, index)
+            )
             for batch in iter(lambda: cursor.fetchmany(4096), []):
                 for (raw,) in batch:
                     totals.update(HistoryRecord.from_bytes(bytes(raw)))
@@ -352,15 +391,30 @@ class NewareStore:
         while len(self._cursors) > MAXIMAL_CURSORS:
             self._cursors.popitem(last=False)
 
-    def _forget_cursors(self, run_id: str) -> None:
+    def _forget(self, run_id: str) -> None:
         with self._lock:
+            self._numbering.pop(run_id, None)
             for key in [key for key in self._cursors if key[0] == run_id]:
                 del self._cursors[key]
 
 
-def _run_from_row(row: tuple[object, ...]) -> RunEntry:
+def _migrate_from_1(db: sqlite3.Connection) -> None:
+    """Number the records of schema 1, which were numbered by sequence on every read, once and for good."""
+    with db:
+        db.execute("ALTER TABLE runs ADD COLUMN sample_identifier TEXT NOT NULL DEFAULT ''")
+        db.execute("ALTER TABLE records ADD COLUMN record_index INTEGER")
+        db.execute(
+            "UPDATE records SET record_index = numbered.position FROM ("
+            "SELECT run_id, sequence, row_number() OVER (PARTITION BY run_id ORDER BY sequence) - 1 AS position "
+            "FROM records) AS numbered "
+            "WHERE records.run_id = numbered.run_id AND records.sequence = numbered.sequence"
+        )
+        db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+
+
+def _run_from_row(row: sqlite3.Row | tuple[object, ...]) -> RunEntry:
     (run_id, unit, channel, sample_name, nominal_capacity, kind, protocol, positions, stopped) = row[:9]
-    test_id, started_ns, charge_range = row[9:12]
+    test_id, started_ns, charge_range, sample_identifier = row[9:13]
     return RunEntry(
         run_id=str(run_id),
         unit=int(str(unit)),
@@ -370,6 +424,7 @@ def _run_from_row(row: tuple[object, ...]) -> RunEntry:
         kind=ProtocolKind(kind),
         protocol=bytes(protocol) if isinstance(protocol, bytes | memoryview) else b"",
         step_positions={int(key): value for key, value in json.loads(str(positions)).items()},
+        sample_identifier=str(sample_identifier),
         stopped=bool(stopped),
         test_id=None if test_id is None else int(str(test_id)),
         started_ns=None if started_ns is None else int(str(started_ns)),

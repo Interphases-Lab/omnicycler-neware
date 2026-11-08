@@ -1,5 +1,7 @@
 import dataclasses
+import json
 import math
+import sqlite3
 import struct
 import time
 
@@ -8,7 +10,7 @@ import pytest
 from neware8.messages import HistoryBatch, HistoryRecord
 
 from omnicycler.neware.io.records import to_data_point
-from omnicycler.neware.io.store import NewareStore, ProtocolKind, RunEntry
+from omnicycler.neware.io.store import FILENAME, NewareStore, ProtocolKind, RunEntry
 
 CONTROLLER = bytes(range(16))
 ADDRESS = neware8.ChannelAddress(1, 2)
@@ -21,6 +23,7 @@ RUN = RunEntry(
     kind=ProtocolKind.NATIVE,
     protocol=b"<xml/>",
     step_positions={1: 1, 2: 2},
+    sample_identifier="CELL-9",
 )
 MAH = 36_000_000_000 // 1000  # one mAh in raw counter units at scale 10000
 
@@ -68,7 +71,7 @@ async def test_attempts_become_runs_once_registered(store):
     other = dataclasses.replace(RUN, run_id="1b0f4f39-8a0e-4b4e-9b39-5bc3e8f29a11")
     run = await started(store, other)  # replaces the attempt that got no TestID
     assert (run.run_id, run.test_id, run.started_ns) == (other.run_id, 7, 1_000_000_000_000)
-    assert await store.record_counts([run]) == {run.run_id: 0}
+    assert store.record_count(run) == 0
 
 
 async def test_commit_keeps_main_records_of_registered_tests_and_the_checkpoint(store):
@@ -83,7 +86,7 @@ async def test_commit_keeps_main_records_of_registered_tests_and_the_checkpoint(
             token=0x2000,
         )
     )
-    assert await store.record_counts([run]) == {run.run_id: 2}
+    assert store.record_count(run) == 2
     assert await store.checkpoint() == 0x2000
 
 
@@ -91,10 +94,10 @@ async def test_resent_records_are_accepted_and_conflicts_refuse_the_batch(store)
     run = await started(store)
     await store.commit(history(raw_record(1), raw_record(2), token=1))
     await store.commit(history(raw_record(2), raw_record(3), token=2))  # a resend overlapping
-    assert await store.record_counts([run]) == {run.run_id: 3}
+    assert store.record_count(run) == 3
     with pytest.raises(neware8.StorageError, match="Conflicting history"):
         await store.commit(history(raw_record(4), raw_record(3, voltage=1), token=3))
-    assert await store.record_counts([run]) == {run.run_id: 3}  # rolled back
+    assert store.record_count(run) == 3  # rolled back
     assert await store.checkpoint() == 2
 
 
@@ -111,8 +114,11 @@ async def test_runs_and_history_survive_a_restart(tmp_path):
     await second.open()
     try:
         assert second.run_on(ADDRESS, 7) == run
+        assert run.sample_identifier == "CELL-9"
         assert await second.checkpoint() == 5
-        assert [point.record_index for point in await second.read(run, 0, 10)] == [0]
+        assert second.record_count(run) == 1
+        await second.commit(history(raw_record(2), token=6))  # numbering continues where it stopped
+        assert [point.record_index for point in await second.read(run, 0, 10)] == [0, 1]
     finally:
         await second.close()
 
@@ -133,14 +139,20 @@ async def test_reads_number_records_without_gaps_and_resume_totals(store):
     assert await store.read(run, 4, 10) == []
 
 
-async def test_late_history_fills_the_gap_and_shifts_indices(store):
+async def test_late_history_is_kept_but_never_shifts_indices(store):
     run = await started(store)
     await store.commit(history(raw_record(1, charge=MAH), raw_record(3, charge=MAH), token=1))
-    assert math.isnan((await store.read(run, 1, 1))[0].charging_capacity)
-    await store.commit(history(raw_record(2, charge=MAH), token=2))
-    points = await store.read(run, 0, 10)
-    assert [p.test_time for p in points] == [1.0, 2.0, 3.0]
-    assert points[2].charging_capacity == pytest.approx(0.001)
+    before = await store.read(run, 0, 10)
+    assert math.isnan(before[1].charging_capacity)
+
+    await store.commit(history(raw_record(2, charge=MAH), token=2))  # the controller resent older history
+
+    after = await store.read(run, 0, 10)
+    assert [(p.record_index, p.test_time) for p in after] == [(0, 1.0), (1, 3.0)]
+    assert math.isnan(after[1].charging_capacity)  # the gap stays a gap
+    assert store.record_count(run) == 2
+    await store.commit(history(raw_record(4, charge=2 * MAH), token=3))
+    assert [p.record_index for p in await store.read(run, 0, 10)] == [0, 1, 2]
 
 
 async def test_delete_drops_the_run_and_its_records(store):
@@ -149,7 +161,51 @@ async def test_delete_drops_the_run_and_its_records(store):
     await store.delete(run)
     assert store.run_on(ADDRESS, 7) is None
     await store.commit(history(raw_record(2), token=2))  # history of a deleted run is not kept
-    assert await store.record_counts([run]) == {run.run_id: 0}
+    assert store.record_count(run) == 0
+    assert not store.holds(run.run_id)
+
+
+async def test_a_schema_1_store_is_numbered_once_on_open(tmp_path):
+    db = sqlite3.connect(tmp_path / FILENAME)
+    db.executescript(
+        """
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE runs (
+            run_id TEXT PRIMARY KEY, unit INTEGER NOT NULL, channel INTEGER NOT NULL,
+            sample_name TEXT NOT NULL, nominal_capacity REAL NOT NULL, kind TEXT NOT NULL,
+            protocol BLOB NOT NULL, step_positions TEXT NOT NULL, stopped INTEGER NOT NULL,
+            test_id INTEGER, started_ns INTEGER, charge_range INTEGER,
+            UNIQUE (unit, channel, test_id)
+        );
+        CREATE TABLE records (
+            run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+            sequence INTEGER NOT NULL, raw BLOB NOT NULL,
+            PRIMARY KEY (run_id, sequence)
+        ) WITHOUT ROWID;
+        PRAGMA user_version=1;
+        """
+    )
+    with db:
+        db.execute(
+            "INSERT INTO runs VALUES (?, 1, 2, 'cell', 0.005, 'native', x'00', ?, 0, 7, 1000000000000, NULL)",
+            (RUN.run_id, json.dumps({"1": 1})),
+        )
+        db.executemany(
+            "INSERT INTO records VALUES (?, ?, ?)",
+            [(RUN.run_id, sequence, raw_record(sequence)) for sequence in (5, 1, 2)],
+        )
+    db.close()
+
+    store = NewareStore(tmp_path)
+    await store.open()
+    try:
+        run = store.run_on(ADDRESS, 7)
+        assert run is not None
+        assert run.sample_identifier == ""
+        assert store.record_count(run) == 3
+        assert [p.test_time for p in await store.read(run, 0, 10)] == [1.0, 2.0, 5.0]
+    finally:
+        await store.close()
 
 
 def test_data_points_use_bdf_units_and_nan_for_unknown_values():

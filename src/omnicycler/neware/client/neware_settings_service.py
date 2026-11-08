@@ -2,7 +2,7 @@ import asyncio
 import collections.abc
 import contextlib
 
-from omnicycler.features.client._base import ErrorMap, error_map, from_wire, ms, translate_errors
+from omnicycler.features.client.base import ErrorMap, error_map, from_wire, ms, translate_errors
 from sila.client import FeatureNamespace
 
 from ..identifiers import feature_identifier

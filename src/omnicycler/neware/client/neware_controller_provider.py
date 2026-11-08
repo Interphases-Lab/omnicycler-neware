@@ -1,4 +1,4 @@
-from omnicycler.features.client._base import (
+from omnicycler.features.client.base import (
     ErrorMap,
     error_map,
     from_wire,

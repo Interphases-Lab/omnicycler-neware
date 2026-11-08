@@ -55,7 +55,7 @@ The OmniCycler channel number is `(unit - 1) * 8 + channel`. Configured channels
 
 **Protocols.** An aurora-unicycler protocol is merged with the sample and checked by omnicycler-features, then converted into a BTS Step File by aurora-unicycler's own Neware exporter. neware8 compiles that file for the channel, offline, during `ValidateProtocol` and `StartProtocol`. neware8 accepts only a protected subset of step files, so the conversion adapts the protocol as follows and reports every adaptation as a `ValidateProtocol` warning:
 
-- Safety limits the protocol leaves unset are filled from the channel's ratings: 0 V to the rated voltage, and the rated current in both directions.
+- Current safety limits the protocol leaves unset are filled from the channel's rated current, in both directions. Voltage limits are always set: omnicycler-features rejects a protocol without them.
 - C-rates become absolute currents. Every value is rounded to the native resolution: 0.1 mV, 1 ms, and one current unit, which is 0.1 µA at scale 10000.
 - These are rejected as `Protocol` validation errors:
   - a step without `until_time_s`
@@ -73,15 +73,15 @@ The OmniCycler channel number is `(unit - 1) * 8 + channel`. Configured channels
 | running, wait start/timeout, synchronous control | `running` | `unavailable` |
 | stop, pause, offline pause, beep, reserved pause | `paused` | `unavailable` |
 | protect, finish protect, fixture states, unknown | `faulted` | `unavailable` |
-| not reported, stale, or controller disconnected | `unavailable` | `unavailable` |
+| not reported, stale, or controller disconnected | `unavailable`, still naming the run, whose data stays readable | `unavailable` |
 
-`FaultReason` is the alarm's description from the manufacturer's catalogue, followed by its code. `ClearChannel` sends Clear Flag to a protected channel and deletes the run with its records from the server's store; the controller's own history is untouched. Because the run is gone, a cleared channel stays `idle` after a server restart, unlike on the reference simulator.
+`ChannelStatus.RunId` names the run whenever this server started the test the controller last reported on the channel. `FaultReason` is the alarm's description from the manufacturer's catalogue, followed by its code. `ClearChannel` sends Clear Flag to a protected channel and deletes the run with its records from the server's store; the controller's own history is untouched. Because the run is gone, a cleared channel stays `idle` without a run, also after a server restart.
 
-**Data.** neware8 is a driver: it hands every history batch to the server's run store (`io/store.py`) and acknowledges it to the controller only after the store committed it durably. The store is one SQLite database holding each run's description (run ID, sample, protocol, step mapping, stopped flag), its TestID, and its main-channel records, deduplicated by sequence, together with the controller's resend position. Records are decoded with neware8's history helpers, which already give BDF units: V, A (positive when charging), Ah, Wh, s.
+**Data.** neware8 is a driver: it hands every history batch to the server's run store (`io/store.py`) and acknowledges it to the controller only after the store committed it durably. The store is one SQLite database holding each run's description (the client's run ID, sample with its identifier, protocol, step mapping, stopped flag), its TestID, and its main-channel records, deduplicated by sequence, together with the controller's resend position. Records are decoded with neware8's history helpers, which already give BDF units: V, A (positive when charging), Ah, Wh, s.
 
 | Field | Source |
 | --- | --- |
-| `RecordIndex` | Numbers the stored records from zero without gaps, in sequence order |
+| `RecordIndex` | Numbers the stored records from zero without gaps, in sequence order, once, when they arrive; a record keeps its index until the run is cleared |
 | `UnixTime` | Host receipt time of the test start plus test time, because the controller's calendar has no established time zone |
 | `ChargingCapacity`, `DischargingCapacity`, `ChargingEnergy`, `DischargingEnergy` | The device's step counters accumulated since the start (neware8's `RunningTotals`); NaN after a history gap |
 | `StepCount` | The number of step executions observed |
@@ -96,11 +96,11 @@ Per omnicycler-features decision 0001, these are separate features with originat
 
 | Feature | Endpoints |
 | --- | --- |
-| `NewareProtocolController` | `StartNativeProtocol(Channel, Protocol, Sample)`, `ValidateNativeProtocol(Channel, Protocol, Sample) → NativeProtocolSummary` |
+| `NewareProtocolController` | `StartNativeProtocol(Channel, RunId, Protocol, Sample)`, `ValidateNativeProtocol(Channel, Protocol, Sample) → NativeProtocolSummary` |
 | `NewareControllerProvider` | `ControllerIdentifier`, `ClockSettingRequested`, `Units`, `GetUnitInformation(Unit) → UnitInformation` |
 | `NewareSettingsService` | `UploadInterval` (observable), `SetUploadInterval(Interval)`, `SynchronizeClock()` |
 
-`StartNativeProtocol` takes a BTS Step File (XML) within neware8's subset. Its run follows the standard lifecycle, with `ProtocolFormat` `native`. `SynchronizeClock` sets the controller clock to the host's local time, and needs every channel finished and alarm-free (`ChannelsNotIdleError`). TestID initialization, firmware and calibration are not exposed.
+`StartNativeProtocol` takes a BTS Step File (XML) within neware8's subset. Its run follows the standard lifecycle, with `ProtocolFormat` `native`, and the same `RunId` rules as `StartProtocol`: the client chooses it, and a repeated start of the run the channel holds has no effect. `SynchronizeClock` sets the controller clock to the host's local time, and needs every channel finished and alarm-free (`ChannelsNotIdleError`). TestID initialization, firmware and calibration are not exposed.
 
 ```python
 from omnicycler.features.types import Sample
@@ -108,7 +108,8 @@ from omnicycler.neware.client import ClientConfig, NewareClient
 
 async with NewareClient.connect(ClientConfig(hostname="cycler-pc.local", port=50052, root_certificates=ca)) as cycler:
     summary = await cycler.protocols.validate_native_protocol(1, step_file, Sample(name="NMC-042", nominal_capacity=0.0045))
-    await cycler.protocols.start_native_protocol(1, step_file, Sample(name="NMC-042", nominal_capacity=0.0045))
+    run_id = await cycler.protocols.start_native_protocol(1, step_file, Sample(name="NMC-042", nominal_capacity=0.0045))
+    await cycler.channels.stop_protocol(1, run_id)
     print(await cycler.controller.get_unit_information(1))
 ```
 
@@ -125,7 +126,8 @@ Simulation happens at the native protocol level. The server's own neware8 client
 - While any channel shows a protection alarm, neware8 refuses to start other channels. Clear faulted channels promptly. A cleared channel keeps reporting its last alarm code until its next start, so `SynchronizeClock` is refused until then.
 - `ClearChannel` deletes the run's data from the server. Export it first if you need it.
 - Tests started outside this server, for example in the BTS software, show as `unavailable`, and their data is not recorded.
-- If late history fills an earlier gap in a run, the record indices after the gap shift by the number of records filled in.
+- Late history, whose sequence lies before records already numbered (the controller resent older history), is kept in the store but not served: numbering it would shift the indices after it. The gap it would have filled stays a gap, and the totals after it stay NaN.
+- If another client (for example the BTS software) starts a test on a channel that still holds this server's ended run, that run is no longer shown; its data stays in the store.
 - neware8's limits apply: its protocol knowledge comes from captures and static analysis, and not every operation has been exercised on hardware.
 
 ## Development
@@ -143,7 +145,7 @@ uv build
 | Tests | What they prove |
 | --- | --- |
 | `tests/test_conformance.py` | The OmniCycler conformance suite, in simulation mode |
-| `tests/io/` | Protocol conversion, the state table, the run store (binding, registration, deduplication, conflicts, checkpoint, restart, gap-free indices and resumable totals), data-point conversion |
+| `tests/io/` | Protocol conversion, the state table, the run store (binding, registration, deduplication, conflicts, checkpoint, restart, gap-free and stable indices, late history, schema migration, resumable totals), data-point conversion |
 | `tests/client/` | Every brand client method and declared error against the in-process server; `test_typing.py` is checked by ty |
 | `tests/contract/` | The brand client against the live brand feature definitions |
 | `tests/test_config.py`, `tests/test_real_mode.py` | Configuration validation; channels from the controller with overrides, remembered for starts without it, mirrored by simulation mode |

@@ -8,8 +8,9 @@ active step needs a time limit, a recording interval and voltage and current
 protections, and every value must convert exactly into native units. This module
 makes a valid unicycler protocol fit that subset where it can, and says how:
 
-- Safety limits the protocol leaves unset are filled from the channel's ratings
-  (voltage 0 V to the rated voltage, current within the rated current).
+- Current safety limits the protocol leaves unset are filled from the channel's
+  rated current. Voltage limits are always set: omnicycler-features rejects a
+  protocol without them.
 - C-rates become absolute currents, and every value is rounded to the native
   resolution (0.1 mV, 1 ms, one native current unit). Changes beyond float noise
   are reported as warnings.
@@ -173,12 +174,7 @@ class _Resolution:
 def _fill_safety(protocol: CyclingProtocol, profile: neware8.ChannelProfile, notes: list[str]) -> None:
     safety = protocol.safety
     rated_current_ma = profile.current_rating_a * 1000
-    defaults = {
-        "max_voltage_V": profile.voltage_rating_v,
-        "min_voltage_V": 0.0,
-        "max_current_mA": rated_current_ma,
-        "min_current_mA": -rated_current_ma,
-    }
+    defaults = {"max_current_mA": rated_current_ma, "min_current_mA": -rated_current_ma}
     filled = {name: value for name, value in defaults.items() if getattr(safety, name) is None}
     if not filled:
         return

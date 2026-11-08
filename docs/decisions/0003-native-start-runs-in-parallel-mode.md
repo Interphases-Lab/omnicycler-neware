@@ -9,10 +9,11 @@ omnicycler-features decision 0004 makes the per-channel standard commands `PARAL
 
 ## Decision
 
-`StartNativeProtocol` uses `PARALLEL`. `NewareBackend.start_native_protocol` takes the same per-channel lock and makes the same state checks as the standard `StartProtocol`:
+`StartNativeProtocol` uses `PARALLEL`. `NewareBackend.start_native_protocol` goes through `CyclerBackend.start_run`, so it takes the same per-channel lock and makes the same checks as the standard `StartProtocol`:
 
-- A second start on the same channel raises `ChannelBusyError`.
+- A start of another run on a busy channel raises `ChannelBusyError`.
 - A start on a channel holding an ended run raises `ChannelNotClearedError`.
+- A repeated start of the run the channel holds succeeds without effect, and a `RunId` held by another channel raises `RunIdInUseError`.
 
 neware8 serializes the device exchanges itself.
 

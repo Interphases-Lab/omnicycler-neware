@@ -13,7 +13,7 @@ server unchanged.
 """
 
 from omnicycler.features.client import ClientConfig, OmniCyclerClient
-from omnicycler.features.client._base import require_feature
+from omnicycler.features.client.base import require_feature
 from sila.client import Client
 
 from . import neware_controller_provider, neware_protocol_controller, neware_settings_service

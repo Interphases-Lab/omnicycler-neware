@@ -12,7 +12,7 @@ import typing
 
 import pytest
 from omnicycler.features import types as standard_types
-from omnicycler.features.client._base import pascal, wire_name
+from omnicycler.features.client.base import pascal, wire_name
 from sila.client import Client, ClientConfig, Constrained, Set, Structure
 from sila.client import List as SiLAList
 from unitelabs.cdk import sila

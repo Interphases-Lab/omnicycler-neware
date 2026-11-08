@@ -5,8 +5,9 @@ from omnicycler.features.errors import (
     ChannelNotClearedError,
     ChannelUnavailableError,
     InvalidSampleError,
+    RunIdInUseError,
 )
-from omnicycler.features.parameters import ChannelNumber, restrict_channels
+from omnicycler.features.parameters import ChannelNumber, RunIdentifier, restrict_channels
 from omnicycler.features.types import Sample
 from unitelabs.cdk import sila
 
@@ -32,7 +33,7 @@ class NewareProtocolController(sila.Feature):
     A run started here follows the standard channel lifecycle. It appears in `ChannelController` and
     `MeasurementProvider` like any other run, with `RunInformation.ProtocolFormat` `native`, the step file as
     `RunInformation.Protocol` and the native step number as `ProtocolStep`. Pause, resume, stop and clear it with
-    `ChannelController`.
+    `ChannelController`, by the RunId given here.
     """
 
     def __init__(self, backend: NewareBackend) -> None:
@@ -44,21 +45,28 @@ class NewareProtocolController(sila.Feature):
         channels = [information.channel for information in await self.backend.get_channels()]
         restrict_channels(self, [self.start_native_protocol, self.validate_native_protocol], channels)
 
-    @sila.UnobservableCommand(errors=[ChannelBusyError, ChannelNotClearedError, ChannelUnavailableError])
-    async def start_native_protocol(self, channel: ChannelNumber, protocol: StepFile, sample: Sample) -> None:
+    @sila.UnobservableCommand(
+        errors=[ChannelBusyError, ChannelNotClearedError, ChannelUnavailableError, RunIdInUseError]
+    )
+    async def start_native_protocol(
+        self, channel: ChannelNumber, run_id: RunIdentifier, protocol: StepFile, sample: Sample
+    ) -> None:
         """
-        Start a Neware step file on an idle channel.
+        Start a Neware step file on an idle channel, as a new run.
 
         The step file is compiled for the channel before anything happens on it; a step file this server cannot
         compile is rejected as a validation error. The sample names the run and is kept with it; C-rates of the
-        step file are not recalculated from it. Once started, the channel reports `running`.
+        step file are not recalculated from it. Once started, the channel reports `running` and the run's RunId.
+        Like `ChannelController.StartProtocol`, a start of the run the channel already holds succeeds without
+        effect.
 
         Args:
           Channel: The channel to start the step file on.
+          RunId: The identifier of the new run, unique across runs. Use a fresh UUID unless you have your own.
           Protocol: The Neware BTS Step File as XML.
           Sample: The cell under test.
         """
-        await self.backend.start_native_protocol(channel, protocol, sample)
+        await self.backend.start_native_protocol(channel, run_id, protocol, sample)
 
     @sila.UnobservableCommand()
     async def validate_native_protocol(

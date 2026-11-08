@@ -27,4 +27,4 @@ async def test_brand_client_types(neware):
     typing.assert_type(await client.settings.synchronize_clock(), None)
     async with client.settings.subscribe_upload_interval() as intervals:
         typing.assert_type(intervals, collections.abc.AsyncIterator[int])
-    typing.assert_type(await client.protocols.start_native_protocol(1, discharge_cycles(), SAMPLE), None)
+    typing.assert_type(await client.protocols.start_native_protocol(1, discharge_cycles(), SAMPLE), str)
