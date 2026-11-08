@@ -6,7 +6,7 @@ All notable changes to this package. The package follows semantic versioning; ea
 
 First version.
 
-- `create_app` serves the OmniCycler standard features (omnicycler-features 0.1.0, commit `a845361`) for a Neware BTS82 through neware8, in simulation mode by default.
+- `create_app` serves the OmniCycler standard features (omnicycler-features 0.1.0, commit `99dd45e`) for a Neware BTS82 through neware8, in simulation mode by default.
 - `NewareBackend`:
   - Converts aurora-unicycler protocols with aurora-unicycler's Neware exporter and compiles them with neware8. Current safety limits the protocol leaves unset are filled from the channel rating, and C-rates become rounded absolute currents.
   - Pauses with the native Stop, resumes with Continue, and stops with Stop followed by Clear Flag.

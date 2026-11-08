@@ -616,7 +616,7 @@ wheels = [
 [[package]]
 name = "omnicycler-features"
 version = "0.1.0"
-source = { git = "https://github.com/Interphases-Lab/omnicycler-features?rev=70cb233d3d94e83d2e2997a84c77f18100390139#70cb233d3d94e83d2e2997a84c77f18100390139" }
+source = { git = "https://github.com/Interphases-Lab/omnicycler-features?rev=99dd45eede7f93ad7e7300c7122bd0453d27f821#99dd45eede7f93ad7e7300c7122bd0453d27f821" }
 dependencies = [
     { name = "aurora-unicycler" },
     { name = "batterydf" },
@@ -651,7 +651,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aurora-unicycler", specifier = "~=0.5.0" },
-    { name = "omnicycler-features", git = "https://github.com/Interphases-Lab/omnicycler-features?rev=70cb233d3d94e83d2e2997a84c77f18100390139" },
+    { name = "omnicycler-features", git = "https://github.com/Interphases-Lab/omnicycler-features?rev=99dd45eede7f93ad7e7300c7122bd0453d27f821" },
     { name = "py-neware8", git = "https://github.com/Interphases-Lab/neware8?rev=main" },
     { name = "unitelabs-cdk", specifier = "~=0.18.0" },
 ]
