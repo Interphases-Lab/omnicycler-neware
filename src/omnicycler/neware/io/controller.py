@@ -212,12 +212,13 @@ class NewareController:
         """Stop listening. Tests on the controller keep running, also on the simulated one."""
         simulator, client, store, directory = self._simulator, self._client, self._store, self._directory
         self._simulator = self._client = self._store = self._directory = None
+        # The client goes first: closing the simulated controller under it would read as a failed controller session.
+        if client is not None:
+            await client.close()
         if simulator is not None:
             await simulator.close()  # disconnects and pauses it; its channels and tests stay as they are
             if directory is not None:
                 park_simulator(directory, simulator)
-        if client is not None:
-            await client.close()
         if store is not None:
             await store.close()
 
