@@ -28,8 +28,6 @@ The server starts in **simulation mode**, with a simulated BTS82 controller (see
 
 **Channels come from the controller.** The server serves the main channels the controller advertises, with the physical ID, ratings and current scale neware8 derives from the controller's metadata (see neware8's [channel profiles](https://github.com/Interphases-Lab/neware8/blob/main/docs/api.md#channel-profiles)). It keeps them in `channels.json` in the storage directory, so later starts serve the same channels while no controller is connected; every channel then reports `unavailable`. The very first start in real mode waits up to `discovery_timeout` for the controller and fails without it. If the controller later reports other channels, the server logs a warning; restart it to serve them. In simulation mode the simulated controller has the units of the learned channels, or `simulation_units` before the real controller was seen.
 
-On Windows, run with `PYTHONUTF8=1`. Otherwise the CDK fails while logging an error to a cp1252 console and turns every defined error into an undefined one.
-
 ### Configuration
 
 Besides the CDK's `sila_server` section (use TLS outside localhost):
@@ -117,7 +115,7 @@ async with NewareClient.connect(ClientConfig(hostname="cycler-pc.local", port=50
 
 ## Simulation mode
 
-Simulation happens at the native protocol level. The server's own neware8 client listens on a local port, and `neware8.simulator.SimulatedController` connects to it like the real controller. The simulator executes each downloaded program on an equivalent-circuit cell (5 mAh by default), with protections, alarms, recording intervals, Stop/Continue/Clear Flag and history that survives reconnects. Every command therefore goes through the same neware8 client, native frames and run store as in real mode. Simulated data lives in `storage_directory/simulation`.
+Simulation happens at the native protocol level. The server's own neware8 client listens on a local port, and `neware8.simulator.SimulatedController` connects to it like the real controller. The simulator executes each downloaded program on an equivalent-circuit cell (5 mAh by default), with protections, alarms, recording intervals, Stop/Continue/Clear Flag and history that survives reconnects. Every command therefore goes through the same neware8 client, native frames and run store as in real mode. Like the real controller, the simulated one keeps its tests when the server restarts within the same process; simulated time stands still meanwhile. Simulated data lives in `storage_directory/simulation`.
 
 ## Known limitations
 

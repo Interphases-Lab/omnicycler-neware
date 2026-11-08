@@ -2,6 +2,11 @@
 
 All notable changes to this package. The package follows semantic versioning; each feature's `version` moves independently (see the best-practices guide).
 
+## Unreleased
+
+- The simulated controller outlives a server restart within the process, as the real controller does, so the conformance kit's restart tests apply.
+- omnicycler-features commit `bd2792c`, with the conformance kit's restart tests and the UTF-8 console; `PYTHONUTF8=1` is no longer needed.
+
 ## 0.1.0 – 2026-11-07
 
 First version.
