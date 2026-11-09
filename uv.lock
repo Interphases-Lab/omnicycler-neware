@@ -849,7 +849,7 @@ wheels = [
 [[package]]
 name = "py-neware8"
 version = "0.3.0"
-source = { git = "https://github.com/Interphases-Lab/neware8?rev=main#1be6227547a844771d078f9670f6159f102fbe0e" }
+source = { git = "https://github.com/Interphases-Lab/neware8?rev=main#cb9163167bcc1cf57ce52defc900a0f575c90334" }
 
 [[package]]
 name = "pyarrow"
