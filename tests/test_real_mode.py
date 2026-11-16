@@ -89,3 +89,27 @@ async def test_the_server_serves_learned_channels_without_a_controller(tmp_path)
             channel = (await cycler.information.get_channels())[0]
             with pytest.raises(ChannelUnavailableError):
                 await cycler.channels.start_protocol(channel.channel, short_protocol(), sample_for(channel))
+
+
+async def wait_for_interval(controller: SimulatedController, interval: int) -> None:
+    async with asyncio.timeout(10):
+        while controller.interval_raw != interval:
+            await asyncio.sleep(0.02)
+
+
+async def test_the_server_sets_its_upload_interval_whenever_the_controller_connects(tmp_path):
+    config = real_mode(tmp_path, upload_interval=9)
+    backend = NewareBackend.from_config(config)
+    async with backend:
+        simulated = SimulatedController(port=config.listen_port, units=1, status_period_s=0.05, reconnect_delay_s=0.1)
+        simulated.interval_raw = 30  # set differently in the BTS software, say
+        async with simulated:
+            await backend.read_channels()
+            await wait_for_interval(simulated, 9)
+
+            await backend.set_upload_interval(7)
+            assert simulated.interval_raw == 7
+            simulated.interval_raw = 30
+            simulated._disconnect()  # the controller reconnects
+            await wait_for_interval(simulated, 7)
+        assert backend.controller.upload_interval == 7

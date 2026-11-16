@@ -18,9 +18,10 @@ class NewareSettingsService(sila.Feature):
 
     Settings apply to the whole controller and every channel; they never start, stop or change a test. The upload
     interval sets how often the controller reports channel status; it does not change what a running test records.
-    The controller keeps a changed interval, so set the server's `upload_interval` configuration to match it before
-    the next server start. Synchronize the clock when `NewareControllerProvider.ClockSettingRequested` is true; it
-    needs every channel finished and free of alarms.
+    The server sets its configured `upload_interval` whenever the controller connects; a changed interval is set again
+    on reconnects until the server stops. To keep it across server restarts, change the configuration too. Synchronize
+    the clock when `NewareControllerProvider.ClockSettingRequested` is true; it needs every channel finished and free
+    of alarms.
     """
 
     def __init__(self, backend: NewareBackend, *, poll_interval: float = 1.0) -> None:

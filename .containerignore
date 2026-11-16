@@ -1,0 +1,13 @@
+.git
+.venv
+**/__pycache__
+.pytest_cache
+.ruff_cache
+.import_linter_cache
+dist
+build
+neware-data
+config.json
+*.pem
+*.key
+*.crt
