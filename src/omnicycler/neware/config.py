@@ -94,7 +94,7 @@ class NewareConfig(ConnectorBaseConfig):
     """The cycler model reported by `CyclerInformationProvider.Model`."""
 
     upload_interval: typing.Annotated[int, Field(ge=1, le=255)] = 5
-    """The controller's status upload interval in seconds, as currently set on the controller."""
+    """The controller's status upload interval in seconds, which the server sets whenever the controller connects."""
 
     start_timeout: typing.Annotated[float, Field(gt=0)] = 30.0
     """How long a start waits for the controller to report the new test, in seconds."""

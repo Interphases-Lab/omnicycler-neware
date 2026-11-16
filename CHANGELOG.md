@@ -4,6 +4,7 @@ All notable changes to this package. The package follows semantic versioning; ea
 
 ## Unreleased
 
+- The server sets its configured `upload_interval` on the controller whenever the controller connects, so the interval neware8 judges status freshness by always matches the controller's. An interval set with `SetUploadInterval` is kept for later connections until the server stops.
 - The simulated controller outlives a server restart within the process, as the real controller does, so the conformance kit's restart tests apply.
 - omnicycler-features commit `bd2792c`, with the conformance kit's restart tests and the UTF-8 console; `PYTHONUTF8=1` is no longer needed.
 

@@ -41,7 +41,7 @@ Besides the CDK's `sila_server` section (use TLS outside localhost):
 | `channels` | none | Only channels whose channel map or ratings differ from what the controller advertises, for example after the map was changed in the manufacturer software. Each gives every value: `unit`, `channel`, `physical_id`, `voltage_rating` (V), `current_rating` (A), `current_scale`, optional `charge_range_raw` |
 | `discovery_timeout` | `60` | How long the first start in real mode waits for the controller to report its channels, in seconds |
 | `model` | `BTS82` | Reported as `CyclerInformationProvider.Model` |
-| `upload_interval` | `5` | The controller's current status upload interval, in seconds. neware8 judges status freshness by it, so it must match the controller |
+| `upload_interval` | `5` | The controller's status upload interval, in seconds. The server sets it on the controller whenever the controller connects, because neware8 cannot read it and judges status freshness by it. `SetUploadInterval` changes it until the server stops; a change in the BTS software is undone on the next connection |
 | `start_timeout` | `30` | How long a start waits for the controller to report the new test |
 | `status_interval` | `1` | Polling period for status subscribers and monitors |
 | `simulation_time_scale`, `simulation_status_period` | `60`, `0.5` | Speed and status cadence of the simulated controller |

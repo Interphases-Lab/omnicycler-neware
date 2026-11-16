@@ -16,6 +16,11 @@ neware8 derives them from the controller's metadata, and configured overrides
 replace them. The real controller's profiles are learned on every connection and
 kept in `channels.json`, so the server knows its channels while no controller is
 connected, and the simulated controller has the same units.
+
+The server owns the controller's status upload interval: neware8 cannot read it
+and judges status freshness by the interval it was told. Every time a controller
+connects, the server therefore sets the configured interval on it, or the one a
+client set since the server started.
 """
 
 import asyncio
@@ -59,7 +64,7 @@ class ConnectionSettings:
       controller_host: The controller's IP address.
       storage_directory: Where the run store keeps its database.
       overrides: Profiles of channels whose channel map or ratings differ from what the controller advertises.
-      upload_interval: The controller's status upload interval, in seconds.
+      upload_interval: The status upload interval set on the controller whenever it connects, in seconds.
       start_timeout: How long a start waits for the controller to report the new test, in seconds.
       simulation_time_scale: How many times faster than wall-clock time simulated cells run.
       simulation_status_period: Seconds between status uploads of the simulated controller.
@@ -106,6 +111,8 @@ class NewareController:
         self._directory: pathlib.Path | None = None
         self._layout_path = settings.storage_directory / LAYOUT_FILENAME
         self._layout = _read_layout(self._layout_path)
+        self._upload_interval = settings.upload_interval  # set on every controller that connects
+        self._interval_task: asyncio.Task[None] | None = None
 
     @property
     def client(self) -> neware8.Client:
@@ -191,6 +198,7 @@ class NewareController:
             raise
         self._client, self._store, self._directory = client, store, directory
         self.simulation = simulation
+        self._interval_task = asyncio.create_task(self._keep_upload_interval(client))
         if simulation:
             simulator = take_simulator(directory)
             if simulator is None:
@@ -212,6 +220,10 @@ class NewareController:
         """Stop listening. Tests on the controller keep running, also on the simulated one."""
         simulator, client, store, directory = self._simulator, self._client, self._store, self._directory
         self._simulator = self._client = self._store = self._directory = None
+        if self._interval_task is not None:
+            self._interval_task.cancel()
+            await asyncio.gather(self._interval_task, return_exceptions=True)
+            self._interval_task = None
         # The client goes first: closing the simulated controller under it would read as a failed controller session.
         if client is not None:
             await client.close()
@@ -331,7 +343,7 @@ class NewareController:
 
     async def set_upload_interval(self, interval: int) -> None:
         """
-        Change the controller's status upload interval.
+        Change the controller's status upload interval, also for later connections until the server stops.
 
         Raises:
           SettingRejectedError: If the controller rejects the interval.
@@ -341,6 +353,7 @@ class NewareController:
         except neware8.OperationRejected as error:
             msg = f"The controller rejected the upload interval {interval} s: {error}"
             raise SettingRejectedError(msg) from None
+        self._upload_interval = interval
 
     async def synchronize_clock(self) -> None:
         """
@@ -362,6 +375,38 @@ class NewareController:
             raise SettingRejectedError(msg) from None
 
     # Helpers.
+
+    async def _keep_upload_interval(self, client: neware8.Client) -> None:
+        """Set the upload interval on every controller session of `client`, as soon as it is ready."""
+        revision, connected = 0, False
+        while True:
+            try:
+                snapshot = await client.wait_snapshot(after_revision=revision, timeout=3600)
+            except TimeoutError:
+                continue
+            except neware8.ConnectionLost:
+                return  # the client was closed
+            revision = snapshot.revision
+            if snapshot.connected and not connected:
+                await self._apply_upload_interval(client)
+            connected = snapshot.connected
+
+    async def _apply_upload_interval(self, client: neware8.Client) -> None:
+        interval = self._upload_interval
+        try:
+            await client.set_upload_interval(interval)
+        except neware8.OperationRejected as error:
+            logger.warning(
+                "The controller rejected the upload interval %d s; status freshness assumes %d s: %s",
+                interval,
+                client.upload_interval_raw,
+                error,
+            )
+        except (neware8.ConnectionLost, neware8.StateError, neware8.OperationUncertain) as error:
+            # The session ended, or will be dropped; the next session sets the interval again.
+            logger.warning("Could not set the controller's upload interval to %d s: %s", interval, error)
+        else:
+            logger.info("Set the controller's status upload interval to %d s", interval)
 
     def _learn(self, profiles: dict[neware8.ChannelAddress, neware8.ChannelProfile]) -> None:
         """Keep the real controller's advertised profiles, if they changed."""
